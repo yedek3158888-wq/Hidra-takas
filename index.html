@@ -1,0 +1,330 @@
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, addDoc, getDocs, doc, updateDoc, deleteDoc, query, where, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getAuth, signInWithEmailAndPassword, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+
+// Firebase Config
+const firebaseConfig = {
+  apiKey: "AIzaSyDOgyXZq1e9oGkLo49EUt1yhuDA3efkxMg",
+  authDomain: "hidraalsat.firebaseapp.com",
+  projectId: "hidraalsat",
+  storageBucket: "hidraalsat.firebasestorage.app",
+  messagingSenderId: "869867217352",
+  appId: "1:869867217352:web:d485d35e8ce0a12db720fd",
+  measurementId: "G-1HL3FZ91ZF"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+
+// !!! BURAYA IMGBB API ANAHTARINI YAPIŞTIR !!!
+const IMGBB_API_KEY = "54d2ed6013aae95ee23ab099ae9831f3";
+
+const ADMIN_EMAIL = "admin@hidrolsat.com";
+const ADMIN_PASS = "er11er11er";
+
+// ==================== YILDIZ ====================
+let selectedStar = 0;
+document.querySelectorAll('#starRating span').forEach(s=>{
+  s.addEventListener('click',()=>{
+    selectedStar = parseInt(s.dataset.val);
+    document.querySelectorAll('#starRating span').forEach(x=>{
+      x.classList.toggle('active', parseInt(x.dataset.val) <= selectedStar);
+    });
+  });
+});
+
+// ==================== IMGBB'YE FOTOĞRAF YÜKLEME FONKSİYONU ====================
+async function uploadToImgBB(file) {
+    const formData = new FormData();
+    formData.append("image", file);
+    
+    // ImgBB API'sine POST isteği atıyoruz [citation:10][citation:14]
+    const response = await fetch(`https://api.imgbb.com/1/upload?key=${IMGBB_API_KEY}`, {
+        method: "POST",
+        body: formData
+    });
+    
+    const data = await response.json();
+    if (data.success) {
+        return data.data.url; // Başarılıysa fotoğrafın linkini döndür [citation:2][citation:5]
+    } else {
+        throw new Error("ImgBB yükleme hatası: " + (data.error?.message || "Bilinmeyen hata"));
+    }
+}
+
+// ==================== YORUM GÖNDER ====================
+window.submitReview = async function(){
+  const name = document.getElementById('revName').value.trim();
+  const text = document.getElementById('revText').value.trim();
+  const msg = document.getElementById('reviewMsg');
+  const photoFile = document.getElementById('revPhoto').files[0];
+  msg.className = 'msg'; msg.textContent = '';
+
+  if(!name || !text || selectedStar === 0){
+    msg.className = 'msg error'; msg.textContent = 'Lütfen ad, yorum ve puan seçin.'; return;
+  }
+  try{
+    let photoUrl = '';
+    if(photoFile){
+        msg.textContent = 'Fotoğraf yükleniyor...';
+        photoUrl = await uploadToImgBB(photoFile); // Firebase yerine ImgBB kullanıyoruz
+    }
+    await addDoc(collection(db,'reviews'),{
+      name, text, stars: selectedStar, photoUrl,
+      approved: false, createdAt: serverTimestamp()
+    });
+    msg.className = 'msg success'; msg.textContent = 'Yorumun admin onayına gönderildi!';
+    document.getElementById('revName').value='';
+    document.getElementById('revText').value='';
+    document.getElementById('revPhoto').value='';
+    selectedStar = 0;
+    document.querySelectorAll('#starRating span').forEach(x=>x.classList.remove('active'));
+  }catch(e){
+    console.error(e);
+    msg.className = 'msg error'; msg.textContent = 'Hata: ' + e.message;
+  }
+}
+
+// ==================== YORUMLARI YÜKLE ====================
+async function loadReviews(){
+  const list = document.getElementById('reviewsList');
+  try{
+    const q = query(collection(db,'reviews'), where('approved','==',true), orderBy('createdAt','desc'));
+    const snap = await getDocs(q);
+    if(snap.empty){ list.innerHTML = '<p style="color:var(--gray);text-align:center;grid-column:1/-1">Henüz onaylı yorum yok.</p>'; return; }
+    list.innerHTML = '';
+    let total = 0, count = 0;
+    snap.forEach(d=>{
+      const r = d.data();
+      total += r.stars; count++;
+      const stars = '★'.repeat(r.stars) + '☆'.repeat(5-r.stars);
+      const photo = r.photoUrl ? `<img src="${r.photoUrl}" style="width:100%;border-radius:10px;margin-top:12px" alt="güvence">` : '';
+      list.innerHTML += `
+        <div class="review">
+          <div class="stars">${stars}</div>
+          <p>"${r.text}"</p>
+          ${photo}
+          <div class="reviewer"><div class="avatar">${r.name.charAt(0).toUpperCase()}</div><div><strong>${r.name}</strong><span>Müşteri</span></div></div>
+        </div>`;
+    });
+    if(count>0){
+      const avg = (total/count).toFixed(1);
+      document.getElementById('statPuan').textContent = '★ ' + avg;
+    }
+  }catch(e){ console.error(e); list.innerHTML = '<p style="color:var(--red);text-align:center;grid-column:1/-1">Yorumlar yüklenemedi.</p>'; }
+}
+
+// ==================== PES İLANLARI YÜKLE ====================
+async function loadMarket(){
+  const grid = document.getElementById('marketGrid');
+  try{
+    const q = query(collection(db,'pes_hesaplari'), orderBy('createdAt','desc'));
+    const snap = await getDocs(q);
+    if(snap.empty){ grid.innerHTML = '<p style="color:var(--gray);text-align:center;grid-column:1/-1">Henüz ilan yok.</p>'; return; }
+    grid.innerHTML = '';
+    snap.forEach(d=>{
+      const i = d.data();
+      const statusClass = i.status==='satilik' ? 'status-satilik' : 'status-satildi';
+      const statusText = i.status==='satilik' ? 'Satılık' : 'Satıldı';
+      grid.innerHTML += `
+        <div class="market-card">
+          <img src="${i.imgUrl}" alt="${i.title}">
+          <div class="market-body">
+            <h3>${i.title}</h3>
+            <div class="price">${i.price} ₺</div>
+            <div class="market-info"><span>Kolektif Güç:</span><strong>${i.power}</strong></div>
+            <div class="market-info"><span>Yedekler:</span><strong>${i.yedek || '-'}</strong></div>
+            <div class="market-info"><span>Kadro Dışı:</span><strong>${i.kadro || '-'}</strong></div>
+            ${i.desc ? `<div class="market-desc">${i.desc}</div>` : ''}
+            <span class="status-badge ${statusClass}">${statusText}</span>
+            <a class="btn-primary" href="https://t.me/orjhidraguven" target="_blank">İletişime Geç</a>
+          </div>
+        </div>`;
+    });
+  }catch(e){ console.error(e); grid.innerHTML = '<p style="color:var(--red);text-align:center;grid-column:1/-1">İlanlar yüklenemedi.</p>'; }
+}
+
+// ==================== GÜVENCE YÜKLE ====================
+async function loadGuvence(){
+  const gal = document.getElementById('gallery');
+  try{
+    const snap = await getDocs(collection(db,'guvenceler'));
+    if(snap.empty){ gal.innerHTML = '<p style="color:var(--gray);text-align:center;grid-column:1/-1">Henüz fotoğraf yok.</p>'; return; }
+    gal.innerHTML = '';
+    snap.forEach(d=>{
+      const g = d.data();
+      gal.innerHTML += `<img src="${g.imgUrl}" onclick="window.open('${g.imgUrl}')" alt="güvence">`;
+    });
+  }catch(e){ console.error(e); }
+}
+
+// ==================== ADMIN ====================
+window.openAdmin = ()=>{ document.getElementById('adminPanel').style.display='block'; };
+window.closeAdmin = ()=>{ document.getElementById('adminPanel').style.display='none'; document.getElementById('adminLogin').style.display='block'; document.getElementById('adminContent').style.display='none'; };
+
+window.adminLogin = async function(){
+  const pass = document.getElementById('adminPass').value;
+  const msg = document.getElementById('adminMsg');
+  msg.className='msg';
+  if(pass !== ADMIN_PASS){ msg.className='msg error'; msg.textContent='Hatalı şifre'; return; }
+  try{
+    await signInWithEmailAndPassword(auth, ADMIN_EMAIL, ADMIN_PASS);
+    document.getElementById('adminLogin').style.display='none';
+    document.getElementById('adminContent').style.display='block';
+    loadPendingReviews();
+    loadAdminIlanlar();
+    loadAdminGuvence();
+  }catch(e){ msg.className='msg error'; msg.textContent='Giriş hatası: '+e.message; }
+}
+
+window.showTab = function(id){
+  document.querySelectorAll('.admin-section').forEach(s=>s.classList.remove('active'));
+  document.querySelectorAll('.admin-tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  event.target.classList.add('active');
+}
+
+// ============ BEKLEYEN YORUMLAR ============
+async function loadPendingReviews(){
+  const box = document.getElementById('pendingReviews');
+  box.innerHTML = 'Yükleniyor...';
+  try{
+    const q = query(collection(db,'reviews'), where('approved','==',false));
+    const snap = await getDocs(q);
+    if(snap.empty){ box.innerHTML = '<p style="color:var(--gray)">Bekleyen yorum yok.</p>'; return; }
+    box.innerHTML = '';
+    snap.forEach(d=>{
+      const r = d.data();
+      box.innerHTML += `
+        <div class="card" style="margin-bottom:16px">
+          <strong>${r.name}</strong> — ${'★'.repeat(r.stars)}
+          <p style="color:var(--gray);margin:8px 0">${r.text}</p>
+          ${r.photoUrl ? `<img src="${r.photoUrl}" style="width:150px;border-radius:8px;margin:8px 0">` : ''}
+          <div>
+            <button class="btn-sm btn-approve" onclick="approveReview('${d.id}')">Onayla</button>
+            <button class="btn-sm btn-reject" onclick="rejectReview('${d.id}')">Reddet</button>
+          </div>
+        </div>`;
+    });
+  }catch(e){ box.innerHTML = 'Hata: '+e.message; }
+}
+
+window.approveReview = async function(id){
+  await updateDoc(doc(db,'reviews',id),{approved:true});
+  loadPendingReviews(); loadReviews();
+}
+window.rejectReview = async function(id){
+  await deleteDoc(doc(db,'reviews',id));
+  loadPendingReviews();
+}
+
+// ============ İLAN EKLE ============
+window.addIlan = async function(){
+  const msg = document.getElementById('ilanMsg');
+  msg.className='msg';
+  const file = document.getElementById('ilanImg').files[0];
+  const title = document.getElementById('ilanTitle').value.trim();
+  const price = document.getElementById('ilanPrice').value;
+  const power = document.getElementById('ilanPower').value.trim();
+  const yedek = document.getElementById('ilanYedek').value.trim();
+  const kadro = document.getElementById('ilanKadro').value.trim();
+  const desc = document.getElementById('ilanDesc').value.trim();
+  const status = document.getElementById('ilanStatus').value;
+
+  if(!file || !title || !price || !power){
+    msg.className='msg error'; msg.textContent='Görsel, başlık, fiyat ve güç zorunlu.'; return;
+  }
+  try{
+    msg.textContent = 'Görsel yükleniyor...';
+    const imgUrl = await uploadToImgBB(file); // Firebase yerine ImgBB
+    await addDoc(collection(db,'pes_hesaplari'),{
+      title, price:Number(price), power, yedek, kadro, desc, status, imgUrl,
+      createdAt: serverTimestamp()
+    });
+    msg.className='msg success'; msg.textContent='İlan eklendi!';
+    document.getElementById('ilanTitle').value='';
+    document.getElementById('ilanPrice').value='';
+    document.getElementById('ilanPower').value='';
+    document.getElementById('ilanYedek').value='';
+    document.getElementById('ilanKadro').value='';
+    document.getElementById('ilanDesc').value='';
+    document.getElementById('ilanImg').value='';
+    loadAdminIlanlar(); loadMarket();
+  }catch(e){ msg.className='msg error'; msg.textContent='Hata: '+e.message; }
+}
+
+async function loadAdminIlanlar(){
+  const box = document.getElementById('ilanList');
+  box.innerHTML='Yükleniyor...';
+  const snap = await getDocs(collection(db,'pes_hesaplari'));
+  if(snap.empty){ box.innerHTML='<p style="color:var(--gray)">İlan yok.</p>'; return; }
+  box.innerHTML='';
+  snap.forEach(d=>{
+    const i = d.data();
+    box.innerHTML += `
+      <div class="card" style="margin-bottom:12px;display:flex;gap:16px;align-items:center">
+        <img src="${i.imgUrl}" style="width:80px;height:80px;object-fit:cover;border-radius:10px">
+        <div style="flex:1">
+          <strong>${i.title}</strong> — ${i.price} ₺ — ${i.status}
+          <p style="color:var(--gray);font-size:.85rem">Güç: ${i.power}</p>
+        </div>
+        <button class="btn-sm btn-delete" onclick="deleteIlan('${d.id}')">Sil</button>
+      </div>`;
+  });
+}
+
+window.deleteIlan = async function(id){
+  if(!confirm('Silinsin mi?')) return;
+  await deleteDoc(doc(db,'pes_hesaplari',id));
+  loadAdminIlanlar(); loadMarket();
+}
+
+// ============ GÜVENCE ============
+window.addGuvence = async function(){
+  const msg = document.getElementById('guvenceMsg');
+  msg.className='msg';
+  const file = document.getElementById('guvenceImg').files[0];
+  if(!file){ msg.className='msg error'; msg.textContent='Fotoğraf seç.'; return; }
+  try{
+    msg.textContent = 'Fotoğraf yükleniyor...';
+    const imgUrl = await uploadToImgBB(file); // Firebase yerine ImgBB
+    await addDoc(collection(db,'guvenceler'),{imgUrl, createdAt: serverTimestamp()});
+    msg.className='msg success'; msg.textContent='Yüklendi!';
+    document.getElementById('guvenceImg').value='';
+    loadAdminGuvence(); loadGuvence();
+  }catch(e){ msg.className='msg error'; msg.textContent='Hata: '+e.message; }
+}
+
+async function loadAdminGuvence(){
+  const box = document.getElementById('guvenceList');
+  const snap = await getDocs(collection(db,'guvenceler'));
+  box.innerHTML='';
+  snap.forEach(d=>{
+    const g = d.data();
+    box.innerHTML += `<div style="position:relative">
+      <img src="${g.imgUrl}" style="width:100%;height:180px;object-fit:cover;border-radius:12px">
+      <button class="btn-sm btn-delete" style="position:absolute;top:8px;right:8px" onclick="deleteGuvence('${d.id}')">Sil</button>
+    </div>`;
+  });
+}
+
+window.deleteGuvence = async function(id){
+  if(!confirm('Silinsin mi?')) return;
+  await deleteDoc(doc(db,'guvenceler',id));
+  loadAdminGuvence(); loadGuvence();
+}
+
+// FAQ
+document.querySelectorAll('.faq-q').forEach(q=>{
+  q.addEventListener('click',()=>{
+    const item = q.parentElement;
+    document.querySelectorAll('.faq-item').forEach(i=>{ if(i!==item) i.classList.remove('active'); });
+    item.classList.toggle('active');
+  });
+});
+
+// İlk yükleme
+loadReviews(); loadMarket(); loadGuvence();
+</script>
